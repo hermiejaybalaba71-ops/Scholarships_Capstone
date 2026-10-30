@@ -224,9 +224,9 @@ interface ScanAnalytics {
   comparable: number;
   exact_matches: number;
   mismatches: number;
-  match_rate_pct: number;
-  avg_align_pct: number;
-  typed_accuracy_pct?: number;
+  match_rate_pct: number | null;
+  avg_align_pct: number | null;
+  typed_accuracy_pct?: number | null;
   avg_need_score?: number | null;
   avg_confidence: number;
   total_ocr_ms: number;
@@ -298,7 +298,7 @@ interface RankedRow {
   ocr_match_pct: number | null;
   ocr_exact_match?: boolean;
   ocr_status: string;
-  itr_trust?: "verified" | "mismatch" | "no_itr";
+  itr_trust?: "verified" | "mismatch" | "unverified" | "no_itr";
   itr_verified?: boolean;
   financial_need_score: number | null;
   priority_target?: number;
@@ -863,7 +863,9 @@ export default function MLRankingPage() {
               msg:
                 `${record.path} \u2192 ${record.ocr_value != null ? peso(record.ocr_value) : "no value"}` +
                 (m && record.declared_income != null
-                  ? ` (declared ${peso(record.declared_income)}, ${pct(m.align_pct, 2)} alignment, ${m.status})`
+                  ? m.status === "not_comparable"
+                    ? ` (declared ${peso(record.declared_income)}, income not detected; no match percentage)`
+                    : ` (declared ${peso(record.declared_income)}, ${pct(m.align_pct, 2)} alignment, ${m.status})`
                   : "") +
                 (record.cached ? " [cached]" : "") +
                 (record.skipped ? ` [skipped: ${record.skipped}]` : ""),
@@ -2164,7 +2166,7 @@ function RankRow({
       : row.prediction === "Moderate Need"
         ? "bg-[#FEF3C7] text-[#92400E] ring-1 ring-[#D97706]/30"
         : "bg-[#D1FAE5] text-[#065F46] ring-1 ring-[#059669]/30";
-  const trust: "verified" | "mismatch" | "no_itr" | "not_saved" =
+  const trust: "verified" | "mismatch" | "unverified" | "no_itr" | "not_saved" =
     row.savedResultOnly ? "not_saved" : row.itr_trust ?? (row.itr_path ? "mismatch" : "no_itr");
   const matchChip =
     trust === "not_saved"
@@ -2173,7 +2175,9 @@ function RankRow({
       ? { cls: "bg-[#D1FAE5] text-[#065F46] ring-[#059669]/30", dot: "bg-emerald-500", text: `${pct(row.ocr_match_pct, 1)} \u2713`, title: "Typed income matches the scanned ITR; the trained model ranks applicants" }
       : trust === "mismatch"
         ? { cls: "bg-[#FEF3C7] text-[#92400E] ring-[#D97706]/30", dot: "bg-amber-500", text: `${pct(row.ocr_match_pct, 1)} \u2717`, title: "Typed income differs from the ITR; OCR is an audit warning and does not change model input" }
-        : { cls: "bg-gray-100 text-gray-600 ring-gray-300/50", dot: "bg-gray-400", text: "No ITR", title: "No ITR uploaded; declared annual income is used when available" };
+        : trust === "unverified"
+          ? { cls: "bg-gray-100 text-gray-600 ring-gray-300/50", dot: "bg-gray-400", text: "OCR unavailable", title: "An ITR was uploaded, but OCR could not read an income amount. Review the document; no match percentage is available." }
+          : { cls: "bg-gray-100 text-gray-600 ring-gray-300/50", dot: "bg-gray-400", text: "No ITR", title: "No ITR uploaded; declared annual income is used when available" };
   const trustNote =
     trust === "not_saved"
       ? "OCR comparison was not stored with this ranking result"
@@ -2181,7 +2185,9 @@ function RankRow({
       ? `Typed income matches the ITR (${pct(row.ocr_match_pct, 1)})`
       : trust === "mismatch"
         ? `Typed income differs from the ITR (${pct(row.ocr_match_pct, 1)}); declared income remains the model input`
-        : "No ITR uploaded; declared income is used when available";
+        : trust === "unverified"
+          ? "ITR uploaded, but OCR did not find an income amount to compare"
+          : "No ITR uploaded; declared income is used when available";
   return (
     <>
       <tr
@@ -2290,7 +2296,7 @@ function RankRow({
                   <b className="text-[#7B1113]">Model priority probability</b>
                 </p>
                 <p className="flex justify-between gap-2 py-0.5">Financial need score <b>{row.financial_need_score?.toFixed(1) ?? "\u2014"}</b></p>
-                <p className="flex justify-between gap-2 py-0.5">OCR match (audit only) <b>{row.ocr_match_pct?.toFixed(2) ?? "\u2014"}</b></p>
+                <p className="flex justify-between gap-2 py-0.5">OCR match (audit only) <b>{row.ocr_status === "not_comparable" ? "\u2014" : row.ocr_match_pct?.toFixed(2) ?? "\u2014"}</b></p>
                 <p className="flex justify-between gap-2 py-0.5">Priority score (predicted) <b className="text-[#7B1113]">{row.priority_score.toFixed(2)}</b></p>
                 {row.probability != null && (
                   <p className="flex justify-between gap-2 py-0.5">P(high need) <b>{(row.probability * 100).toFixed(1)}%</b></p>

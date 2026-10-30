@@ -701,7 +701,6 @@ def predict(rows: List[Dict], trained: Dict) -> List[Dict]:
                     "income_source",
                     "income_delta",
                     "ocr_income_differs",
-                    "ocr_match_pct",
                     "ocr_exact_match",
                     "ocr_status",
                     "financial_need_score",
@@ -714,6 +713,11 @@ def predict(rows: List[Dict], trained: Dict) -> List[Dict]:
                     "first_gen_flag",
                     "priority_bonus",
                 )},
+                "ocr_match_pct": (
+                    row.get("ocr_match_pct")
+                    if row.get("ocr_status") != "not_comparable"
+                    else None
+                ),
                 "itr_trust": trust,
                 "itr_verified": trust == "verified",
                 "priority_score": round(float(score), 2),

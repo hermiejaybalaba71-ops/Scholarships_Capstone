@@ -16,36 +16,40 @@ from typing import Dict, List, Optional
 from . import config as _config
 
 # ---------------------------------------------------------------- amount ----
-AMOUNT_RE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+\.\d{1,2}")
+AMOUNT_RE = re.compile(
+    r"(?<![\d.,])(?:"
+    r"\d{1,3}(?:,\d{3})+"
+    r"|\d{1,3}(?:\.\d{3})+"
+    r"|\d{4,9}"
+    r")(?:[.,]\d{1,2})?(?![\d.,])"
+)
 BARE_CURRENCY_RE = re.compile(r"(?<![\d.,])\d{4,9}(?![\d.,])")
 
-# Ordered by confidence in the meaning of the value we want. Covers every
-# Philippine BIR income-tax layout that scholarship ITRs commonly use:
-# 1701/1701A/1701Q (self-employed + mixed), 1700 (pure compensation),
-# 2316 (Certificate of Compensation Payment - the usual employee proof),
-# plus eFPS-generated printouts of the same forms.
+# Ordered from family-level income labels through common BIR compensation,
+# business-income and taxable-income labels. BIR layouts vary by form and year.
 INCOME_KEYWORDS = [
-    # BIR Form 1701 - family summary block
     (re.compile(r"total\s*family\s*annual\s*income", re.I), True),
+    (re.compile(r"total\s*annual\s*family\s*income", re.I), True),
     (re.compile(r"total\s*family\s*income", re.I), True),
-    # BIR Form 2316 / 1700 - compensation summaries
     (re.compile(r"total\s*gross\s*compensation\s*income", re.I), True),
-    (re.compile(r"gross\s*compensation\s*income", re.I), True),
     (re.compile(r"total\s*compensation\s*income", re.I), True),
+    (re.compile(r"gross\s*compensation\s*income", re.I), True),
     (re.compile(r"taxable\s*compensation\s*income", re.I), False),
     (re.compile(r"annual\s*compensation\s*income", re.I), False),
-    # Generic totals (1701/1701A business pages, eFPS printouts)
     (re.compile(r"total\s*annual\s*income", re.I), True),
-    (re.compile(r"total\s*income", re.I), True),
     (re.compile(r"family\s*annual\s*income", re.I), False),
     (re.compile(r"annual\s*income", re.I), False),
+    (re.compile(r"total\s*gross\s*income", re.I), True),
+    (re.compile(r"gross\s*income\s*from\s*(?:business|operation)", re.I), True),
     (re.compile(r"gross\s*income", re.I), False),
-    (re.compile(r"compensation\s*income", re.I), False),
+    (re.compile(r"total\s*taxable\s*income", re.I), True),
+    (re.compile(r"net\s*taxable\s*income", re.I), False),
+    (re.compile(r"total\s*income", re.I), True),
     (re.compile(r"taxable\s*income", re.I), False),
     (re.compile(r"total\s*net\s*income", re.I), False),
     (re.compile(r"net\s*income", re.I), False),
     (re.compile(r"total\s*business\s*income", re.I), False),
-    (re.compile(r"total\s*sales", re.I), False),
+    (re.compile(r"compensation\s*income", re.I), False),
 ]
 
 IGNORE_RE = re.compile(
@@ -127,10 +131,12 @@ def _configure_ort_session() -> Dict[str, str]:
 
 
 def parse_amount(raw: str) -> Optional[float]:
-    text = raw.replace(",", "").replace("₱", "").replace("PHP", "").strip()
+    text = raw.replace("₱", "").replace("PHP", "").strip()
     text = re.sub(r"[^\d.]", "", text)
     if not text or text == ".":
         return None
+    if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", text):
+        text = text.replace(".", "")
     try:
         value = float(text)
     except ValueError:
@@ -228,7 +234,7 @@ def _amounts_in(line: dict) -> List[tuple]:
     for match in AMOUNT_RE.finditer(line["text"]):
         value = parse_amount(match.group(0))
         if value is not None:
-            out.append((value, match.group(0)))
+            out.append((value, match.group(0), match.start()))
     return out
 
 
@@ -239,10 +245,20 @@ def extract_income(lines: List[dict], allow_fallback: bool = True) -> Optional[d
 
     for pattern, want_total in INCOME_KEYWORDS:
         for index, line in enumerate(lines):
-            if not pattern.search(line["text"]):
+            anchor_match = pattern.search(line["text"])
+            if not anchor_match:
                 continue
-            if not want_total and (
-                ANCHOR_BLOCK_RE.search(line["text"]) or len(line["text"]) > ANCHOR_MAX_LEN
+            is_tax_return_header = re.search(
+                r"(?:annual\s*income\s*tax|income\s*tax\s*return|tax\s*return)",
+                line["text"],
+                re.I,
+            )
+            if is_tax_return_header or (
+                not want_total
+                and (
+                    ANCHOR_BLOCK_RE.search(line["text"])
+                    or len(line["text"]) > ANCHOR_MAX_LEN
+                )
             ):
                 continue
 
@@ -263,20 +279,27 @@ def extract_income(lines: List[dict], allow_fallback: bool = True) -> Optional[d
                 # Skip tax-due/penalty rows AND the amount line under them.
                 if offset in due_offsets or (offset - 1) in due_offsets:
                     continue
-                for value, raw in _amounts_in(win):
+                for value, raw, start in _amounts_in(win):
                     if value < 1000:
                         continue
-                    candidates.append((value, raw, offset, win))
+                    if offset == 0 and start < anchor_match.end():
+                        continue
+                    if (
+                        1900 <= value <= 2099
+                        and re.search(r"\b(?:tax\s*year|calendar\s*year|t\.?\s*y\.?)\b", win["text"], re.I)
+                    ):
+                        continue
+                    candidates.append((value, raw, offset, start, win))
 
             if not candidates:
                 continue
 
             if want_total:
-                chosen = min(candidates, key=lambda c: c[2])
+                chosen = min(candidates, key=lambda c: (c[2], c[3]))
             else:
                 chosen = max(candidates, key=lambda c: c[0])
 
-            value, raw, offset, win = chosen
+            value, raw, offset, _, win = chosen
             scores = [line["score"], win["score"]] if offset else [line["score"]]
             return {
                 "value": value,
@@ -301,7 +324,7 @@ def extract_income(lines: List[dict], allow_fallback: bool = True) -> Optional[d
         has_group = bool(re.search(r"\d{1,3}(?:,\d{3})+", line["text"]))
         if not has_group or line["score"] < _config.OCR_MIN_CONFIDENCE:
             continue
-        for value, raw in _amounts_in(line):
+        for value, raw, _ in _amounts_in(line):
             if value >= 10_000:
                 fallback.append((value, raw, line))
 

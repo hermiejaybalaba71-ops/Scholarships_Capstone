@@ -347,9 +347,9 @@ def analytics_from(results: dict, elapsed: float, engine=None) -> dict:
         "comparable": len(comparable),
         "exact_matches": len(exact),
         "mismatches": len(comparable) - len(exact),
-        "match_rate_pct": round(100.0 * len(exact) / len(comparable), 2) if comparable else 0.0,
-        "avg_align_pct": round(sum(aligned) / len(aligned), 2) if aligned else 0.0,
-        "typed_accuracy_pct": round(sum(aligned) / len(aligned), 2) if aligned else 0.0,
+        "match_rate_pct": round(100.0 * len(exact) / len(comparable), 2) if comparable else None,
+        "avg_align_pct": round(sum(aligned) / len(aligned), 2) if aligned else None,
+        "typed_accuracy_pct": round(sum(aligned) / len(aligned), 2) if aligned else None,
         "avg_need_score": round(sum(need_scores) / len(need_scores), 2) if need_scores else None,
         "avg_confidence": round(sum(confidences) / len(confidences), 4) if confidences else 0.0,
         "total_ocr_ms": round(sum(r["ocr_ms"] for r in records), 1),
@@ -789,9 +789,12 @@ def main() -> int:
                 ranking = rank_model.predict(rows, training)
                 emit({"type": "rank", "rows": ranking})
                 for item in ranking:
+                    ocr_match = item.get("ocr_match_pct")
+                    ocr_match_label = f"{ocr_match}%" if ocr_match is not None else "not comparable"
                     log(
                         f"  #{item['rank']} {item.get('student_name') or 'File row'} - priority {item['priority_score']} "
-                        f"({item['prediction']}, need {item.get('financial_need_score')}, OCR {item.get('ocr_match_pct')}%, "
+                        f"({item['prediction']}, need {item.get('financial_need_score')}, "
+                        f"OCR {ocr_match_label}, "
                         f"income {_peso(item.get('income_used') or item.get('annual_income_family'))} "
                         f"from {item.get('income_source', 'declared')})"
                     )

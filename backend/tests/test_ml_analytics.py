@@ -18,9 +18,93 @@ import joblib
 
 from ml import features
 from ml.csv_data import _resolve, row_from
-from ml.pipeline import build_docs
+from ml.ocr_engine import extract_income, match_declared
+from ml.pipeline import analytics_from, build_docs
 from ml.rank_model import load_external, predict, train
-from ml.service import MAX_SHEET_BYTES, _parse_sheet
+from ml.service import MAX_SHEET_BYTES, _parse_sheet, health
+
+
+class OcrIncomeExtractionTests(unittest.TestCase):
+    @staticmethod
+    def line(text, y=100, x=100):
+        return {"text": text, "score": 0.96, "y": y, "x": x, "h": 20}
+
+    def test_extracts_plain_integer_annual_income(self):
+        extracted = extract_income([self.line("Total annual income 132000")])
+
+        self.assertIsNotNone(extracted)
+        self.assertEqual(extracted["value"], 132_000)
+
+    def test_extracts_integer_amount_in_a_separate_same_row_box(self):
+        extracted = extract_income(
+            [
+                self.line("Gross compensation income"),
+                self.line("132000", x=700),
+            ]
+        )
+
+        self.assertIsNotNone(extracted)
+        self.assertEqual(extracted["value"], 132_000)
+
+    def test_extracts_total_taxable_income_from_a_bir_form(self):
+        extracted = extract_income([self.line("Total taxable income 132,000.00")])
+
+        self.assertIsNotNone(extracted)
+        self.assertEqual(extracted["value"], 132_000)
+
+    def test_supports_annual_family_income_label_order_variation(self):
+        extracted = extract_income([self.line("Total annual family income 132000")])
+
+        self.assertIsNotNone(extracted)
+        self.assertEqual(extracted["value"], 132_000)
+
+    def test_does_not_select_form_number_or_tax_year_before_income_amount(self):
+        extracted = extract_income(
+            [self.line("BIR Form 1701 Total annual income TY 2024 132,000.00")]
+        )
+
+        self.assertIsNotNone(extracted)
+        self.assertEqual(extracted["value"], 132_000)
+
+    def test_parses_ocr_period_used_as_thousands_separator(self):
+        extracted = extract_income([self.line("Total annual income 132.000")])
+
+        self.assertIsNotNone(extracted)
+        self.assertEqual(extracted["value"], 132_000)
+
+    def test_match_percentage_is_based_on_declared_and_ocr_amounts(self):
+        match = match_declared(132_000, 120_000)
+
+        self.assertEqual(match["align_pct"], 90.91)
+        self.assertEqual(match["status"], "mismatch")
+
+    def test_ml_health_reports_required_ocr_runtime_modules(self):
+        payload = json.loads(health().body)
+
+        self.assertTrue(payload["opencv"])
+        self.assertTrue(payload["onnxruntime"])
+
+    def test_scan_analytics_leaves_match_percent_unavailable_without_ocr_income(self):
+        record = {
+            "linked": True,
+            "ocr_value": None,
+            "declared_income": 120_000,
+            "match": {
+                "align_pct": 0.0,
+                "exact_match": False,
+                "status": "not_comparable",
+            },
+            "skipped": None,
+            "need_score": None,
+            "confidence": 0.0,
+            "ocr_ms": 1.0,
+        }
+
+        analytics = analytics_from({"itr.png": record}, 1.0)
+
+        self.assertIsNone(analytics["match_rate_pct"])
+        self.assertIsNone(analytics["avg_align_pct"])
+        self.assertIsNone(analytics["typed_accuracy_pct"])
 
 
 class ForestStub:
@@ -80,6 +164,21 @@ class RankingAnalyticsTests(unittest.TestCase):
             columns=features.NOTEBOOK_FEATURE_COLUMNS,
         )
         np.testing.assert_array_equal(model_input, alternate_model_input)
+
+    def test_unreadable_itr_is_not_reported_as_a_zero_percent_mismatch(self):
+        row = features.build_row(
+            {"application_id": 1, "declared_income": 120_000, "itr_path": "student/itr.png"},
+            {
+                "ocr_value": None,
+                "match": {
+                    "align_pct": 0.0,
+                    "exact_match": False,
+                    "status": "not_comparable",
+                },
+            },
+        )
+
+        self.assertEqual(row["itr_trust"], "unverified")
 
     def test_sheet_reader_parses_upload_bytes(self):
         parsed = _parse_sheet(
@@ -352,6 +451,31 @@ class RankingAnalyticsTests(unittest.TestCase):
         self.assertEqual([row["application_id"] for row in ranked], [3, 2, 1])
         self.assertEqual([row["rank"] for row in ranked], [1, 2, 3])
         self.assertEqual([row["priority_score"] for row in ranked], [90.0, 90.0, 20.0])
+
+    def test_ranked_row_does_not_show_zero_match_when_ocr_found_no_income(self):
+        model = {
+            "regressor": None,
+            "classifier": FixedProbabilityClassifier([0.8]),
+            "feature_columns": ["annual_income_family"],
+            "medians": {"annual_income_family": 0},
+        }
+        rows = [
+            {
+                "application_id": 1,
+                "income_used": 120_000,
+                "annual_income_family": 120_000,
+                "has_itr": 1,
+                "itr_path": "student/itr.png",
+                "ocr_income": None,
+                "ocr_match_pct": 0.0,
+                "ocr_status": "not_comparable",
+            }
+        ]
+
+        ranked = predict(rows, model)
+
+        self.assertIsNone(ranked[0]["ocr_match_pct"])
+        self.assertEqual(ranked[0]["itr_trust"], "unverified")
 
     def test_colab_training_requires_observed_npcinc_labels(self):
         rows = [

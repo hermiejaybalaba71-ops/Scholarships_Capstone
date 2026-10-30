@@ -89,10 +89,17 @@ function ApplyPageContent() {
         await worker.terminate();
         const text = data.text || "";
         const incomeMatch =
-          text.match(/(?:total\s+)?(?:annual\s+)?(?:taxable\s+)?income[^\d]{0,40}₱?\s*([\d,]+(?:\.\d{2})?)/i) ||
+          text.match(/(?:total\s+family\s+annual\s+income|total\s+annual\s+family\s+income|family\s+annual\s+income|total\s+family\s+income|total\s+gross\s+compensation\s+income|total\s+compensation\s+income|gross\s+compensation\s+income|taxable\s+compensation\s+income|annual\s+compensation\s+income|total\s+annual\s+income|total\s+gross\s+income|gross\s+income\s+from\s+(?:business|operation)|gross\s+income|total\s+taxable\s+income|net\s+taxable\s+income|total\s+income|taxable\s+income|net\s+income)[^\d]{0,40}(?:₱|PHP|P)?\s*((?:\d{1,3}(?:[,.]\d{3})+|\d{4,9})(?:[.,]\d{1,2})?)/i) ||
           text.match(/₱\s*([\d,]+(?:\.\d{2})?)/);
         if (incomeMatch) {
-          const parsed = Number(incomeMatch[1].replace(/,/g, ""));
+          const amount = incomeMatch[1];
+          const decimal = amount.match(/[.,]\d{1,2}$/)?.[0] ?? "";
+          const integer = decimal ? amount.slice(0, -decimal.length) : amount;
+          const grouped = /^\d{1,3}(?:[,.]\d{3})+$/.test(integer);
+          const normalized = grouped
+            ? `${integer.replace(/[,.]/g, "")}${decimal ? `.${decimal.slice(1)}` : ""}`
+            : amount.replace(/,/g, "");
+          const parsed = Number(normalized);
           if (!isNaN(parsed) && parsed > 0) {
             setForm((f) => ({ ...f, annualIncome: String(Math.round(parsed)) }));
             setOcrStatus(`OCR detected annual income: ₱${Math.round(parsed).toLocaleString()} — verify it matches your ITR.`);

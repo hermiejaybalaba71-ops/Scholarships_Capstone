@@ -221,7 +221,7 @@ def itr_income_bracket(income: Optional[float]) -> float:
 
 
 def itr_trust(row: Dict) -> str:
-    """ITR comparison status for analytics: 'verified' | 'mismatch' | 'no_itr'.
+    """ITR comparison status for analytics: verified, mismatch, unreadable, or absent.
 
     An applicant is only 'verified' when an ITR was uploaded and the income
     the applicant typed matches the figure OCR read from it (>= OCR_TRUST_MIN_PCT).
@@ -230,6 +230,8 @@ def itr_trust(row: Dict) -> str:
     has_itr = bool(row.get("itr_path")) or bool(row.get("has_itr"))
     if not has_itr:
         return "no_itr"
+    if row.get("ocr_income") is None or row.get("ocr_status") == "not_comparable":
+        return "unverified"
     match = row.get("ocr_match_pct") or 0.0
     try:
         match = float(match)

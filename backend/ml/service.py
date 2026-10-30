@@ -20,6 +20,8 @@ import threading
 from pathlib import Path
 from typing import Iterator
 
+import cv2
+import onnxruntime
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -59,7 +61,15 @@ def _runtime_python() -> tuple[str, dict[str, str]]:
 
 @app.get("/")
 def health() -> JSONResponse:
-    return JSONResponse({"ok": True, "service": "ml", "python": sys.version.split()[0]})
+    return JSONResponse(
+        {
+            "ok": True,
+            "service": "ml",
+            "python": sys.version.split()[0],
+            "opencv": cv2.__version__,
+            "onnxruntime": onnxruntime.__version__,
+        }
+    )
 
 
 def _parse_sheet(filename: str, contents: bytes) -> dict:
